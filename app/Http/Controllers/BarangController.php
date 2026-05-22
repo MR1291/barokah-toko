@@ -116,47 +116,61 @@ class BarangController extends Controller
         
         return back()->with('error', 'Data transaksi tidak valid');
     }
-public function laporan(Request $request) {
-    $view = $request->get('view', 'monthly');
+    public function laporan(Request $request)
+{
+    // 1. Ambil inputan filter dari user (jika tidak ada, default hari ini)
+    $filterType = $request->input('filter_type', 'hari_ini'); 
+    $selectedDate = $request->input('tanggal'); // format: YYYY-MM-DD
+    $selectedMonth = $request->input('bulan', date('m')); 
+    $selectedYear = $request->input('tahun', date('Y'));
 
-    try {
-        if ($view == 'daily') {
-            // Laporan 7 hari terakhir untuk SQLite
-            $data = Penjualan::select(
-                DB::raw('date(tanggal_jual) as label'), 
-                DB::raw('SUM(total_harga) as total')
-            )
-            ->where('tanggal_jual', '>=', now()->subDays(7))
-            ->groupBy('label')
-            ->orderBy('label', 'ASC')
-            ->get();
-        } else {
-            // Laporan bulanan untuk SQLite
-            // strftime('%m') mengambil angka bulan (01-12)
-            $data = Penjualan::select(
-                DB::raw("strftime('%m', tanggal_jual) as urutan"),
-                DB::raw("
-                    CASE strftime('%m', tanggal_jual)
-                        WHEN '01' THEN 'Januari' WHEN '02' THEN 'Februari'
-                        WHEN '03' THEN 'Maret' WHEN '04' THEN 'April'
-                        WHEN '05' THEN 'Mei' WHEN '06' THEN 'Juni'
-                        WHEN '07' THEN 'Juli' WHEN '08' THEN 'Agustus'
-                        WHEN '09' THEN 'September' WHEN '10' THEN 'Oktober'
-                        WHEN '11' THEN 'November' WHEN '12' THEN 'Desember'
-                    END as label
-                "),
-                DB::raw('SUM(total_harga) as total')
-            )
-            ->whereYear('tanggal_jual', date('Y'))
-            ->groupBy('urutan', 'label')
-            ->orderBy('urutan', 'ASC')
-            ->get();
-        }
-    } catch (\Exception $e) {
-        $data = collect();
+    // Query dasar untuk mengambil data transaksi / penjualan
+    // (Asumsi kamu punya tabel 'transaksis' atau 'penjualans' yang mencatat total harga penjualan)
+    $queryPenjualan = DB::table('transaksis'); 
+
+    // 2. Logika Pemrosesan Filter Waktu
+    if ($filterType === 'hari_ini') {
+        $queryPenjualan->whereDate('created_at', now()->today());
+        $labelWaktu = "Hari Ini (" . now()->format('d M Y') . ")";
+    } elseif ($filterType === 'kustom_tanggal' && $selectedDate) {
+        $queryPenjualan->whereDate('created_at', $selectedDate);
+        $labelWaktu = "Tanggal " . date('d M Y', strtotime($selectedDate));
+    } elseif ($filterType === 'bulanan') {
+        $queryPenjualan->whereMonth('created_at', $selectedMonth)
+                       ->whereYear('created_at', $selectedYear);
+        $namaBulan = date('F', mktime(0, 0, 0, $selectedMonth, 10));
+        $labelWaktu = "Bulan $namaBulan $selectedYear";
+    } else {
+        // Fallback jika tidak ada filter cocok
+        $queryPenjualan->whereDate('created_at', now()->today());
+        $labelWaktu = "Hari Ini (" . now()->format('d M Y') . ")";
     }
 
-    return view('laporan', compact('data', 'view'));
+    // Hitung Total Omset & Total Transaksi berdasarkan filter di atas
+    $totalPenjualan = $queryPenjualan->sum('total_harga'); 
+    $totalTransaksiCount = $queryPenjualan->count();
+    
+    // Ambil list detail item transaksi terlaris/terbaru untuk ditampilkan di tabel laporan
+    $listPenjualan = $queryPenjualan->latest()->paginate(10)->withQueryString();
+
+    // 3. FITUR STOK MENIPIS (Ambil produk yang stoknya <= 10)
+    // Otomatis kasih warning buat admin toko
+    $stokKritis = Barang::where('stok', '<=', 10)
+                        ->orderBy('stok', 'asc')
+                        ->get();
+
+    // 4. Oper semua data ke view laporan
+    return view('laporan', compact(
+        'totalPenjualan', 
+        'totalTransaksiCount', 
+        'listPenjualan', 
+        'stokKritis', 
+        'labelWaktu',
+        'filterType',
+        'selectedDate',
+        'selectedMonth',
+        'selectedYear'
+    ));
 }
 
 
